@@ -5,7 +5,7 @@ from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 model_embedding = HuggingFaceEmbeddings(model_name=MODEL_EMBEDDING, model_kwargs={"trust_remote_code": True})
 faiss = VectorStore("luat_hon_nhan_gia_dinh", model_embedding)
 
-chunks = faiss.recursive_chunking("/home/bojjoo/Downloads/luat_hon_nhan_gia_dinh.pdf")
+chunks = faiss.recursive_chunking("/home/bojjoo/Downloads/PDF/luat_hon_nhan_gia_dinh.pdf")
 
 db = faiss.create_vectorstore(chunks)
 

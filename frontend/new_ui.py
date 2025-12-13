@@ -67,9 +67,7 @@ faiss = VectorStore("luat_hon_nhan_gia_dinh/documents", model_embedding)
 transcript_faiss = VectorStore("luat_hon_nhan_gia_dinh/transcripts", model_embedding)
 cache_faiss = VectorStore("luat_hon_nhan_gia_dinh/cache", model_embedding)
 
-meeting_document_summarize = """LUẬT HÔN NHÂN VÀ GIA ĐÌNH: Luật này quy định chế độ hôn nhân và gia đình; chuẩn mực pháp lý cho cách ứng xử giữa các thành viên
-gia đình; trách nhiệm của cá nhân, tổ chức, Nhà nước và xã hội trong việc xây dựng, củng cố chế độ hôn
-nhân và gia đình."""
+meeting_document_summarize = """Tài liệu này nói về các quy định pháp luật liên quan đến hôn nhân và gia đình, bao gồm điều kiện kết hôn, đăng ký kết hôn, hủy kết hôn trái pháp luật, quan hệ giữa vợ chồng, quyền và nghĩa vụ của các thành viên trong gia đình, cũng như các hành vi vi phạm pháp luật về hôn nhân và gia đình. Nội dung cũng đề cập đến hậu quả pháp lý của việc hủy kết hôn, quan hệ tài sản giữa vợ chồng, và các vấn đề liên quan đến tập quán trong hôn nhân và gia đình."""
 
 # =========================
 # RAG QUEUES & GLOBALS (luồng cũ)
