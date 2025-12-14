@@ -3,6 +3,7 @@ aiofiles==24.1.0
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.1
 aiosignal==1.4.0
+alembic==1.14.0
 annotated-types==0.7.0
 antlr4-python3-runtime==4.9.3
 anyio==4.11.0
@@ -151,6 +152,7 @@ propcache==0.4.1
 proto-plus==1.26.1
 protobuf==6.33.0
 psutil==7.1.0
+psycopg2-binary==2.9.10
 ptyprocess==0.7.0
 punctuators==0.0.7
 pure_eval==0.2.3
