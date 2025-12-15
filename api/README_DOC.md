@@ -45,17 +45,6 @@ Mô tả này chỉ giải thích vai trò / mục đích của từng file ho�
   - `on_update(event, payload, full)`: callback/entrypoint nhận sự kiện realtime.
   - `just_print(event, payload, full)`: hàm trợ giúp để in payload trong thử nghiệm.
 
-- `api/routes/routes.py`(phần route của fastapi chưa cập nhật, ko cần xem file này và server.py) :
-  - `home()`: endpoint gốc (healthcheck / trang chỉ dẫn).
-  - `speech_to_text(audio_path)`: endpoint nhận audio và trả kết quả STT.
-  - `chat_with_ai(request)`, `summarize_gemini(script)`, `chat_gemini(user_input)`: các endpoint tương tác với LLM/AI.
-  - `extract_audio_from_path(request)`: endpoint tách audio từ video theo đường dẫn.
-
-- `api/routes/server.py`:
-  - `_loop_worker(loop)`, `run_async(coro, timeout)`: tiện ích chạy coroutine trong vòng lặp nền.
-  - `worker_loop(worker_id)`, `summarizer_loop()`: luồng worker tương tự pipeline.
-  - Các phương thức quản lý WebSocket / session: `register(session_id)`, `unregister(session_id)`, `publish_to(session_id, payload)`, `_safe_send_json(data)`, `close()`.
-
 - `api/services/vcdb_faiss.py` (class chính và method):
   - `hybrid_search(question)`: tìm kiếm kết hợp (semantic + chính xác).
   - `semantic_chunking(file_path)`: thực hiện chunking ngữ nghĩa/phiên bản bất đồng bộ.
