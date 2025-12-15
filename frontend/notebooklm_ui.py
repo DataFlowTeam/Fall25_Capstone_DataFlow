@@ -406,7 +406,7 @@ def stop_recording():
     global transcript_text
     
     if current_meeting_id is None:
-        return "⚠️ Chưa có cuộc họp!"
+        return "⚠️ Chưa có cuộc họp!", gr.update(visible=False)
     
     stop_event.set()
     rag_processor.flush_all(reason="stop")
@@ -427,9 +427,79 @@ def stop_recording():
         finally:
             db.close()
         
-        return "⏹️ Đã dừng và lưu transcript"
+        # Hiển thị modal xác nhận tạo biên bản
+        return "⏹️ Đã dừng và lưu transcript", gr.update(visible=True)
     except Exception as e:
-        return f"⚠️ Lỗi: {e}"
+        return f"⚠️ Lỗi: {e}", gr.update(visible=False)
+
+
+def generate_meeting_minutes():
+    """
+    Tạo biên bản cuộc họp bằng MapReduce pipeline
+    """
+    global transcript_text
+
+    if current_meeting_id is None:
+        return (
+            "⚠️ Chưa có cuộc họp!",
+            gr.update(visible=False),  # minutes_modal
+            "",  # minutes_display
+            gr.update(open=False)  # minutes_accordion
+        )
+
+    try:
+        with transcript_lock:
+            document = transcript_text
+
+        if not document.strip():
+            return (
+                "⚠️ Không có transcript để tạo biên bản!",
+                gr.update(visible=False),
+                "",
+                gr.update(open=False)
+            )
+
+        # Chạy MapReduce pipeline
+        question = "Tóm tắt các ý chính của cuộc họp, trình bày rõ ràng thành từng mục nếu cần thiết"
+        result = mapreduce_pipeline.run(document, question, chunk_size=4096)
+
+        # Lưu biên bản vào database (vd: description)
+        db = SessionLocal()
+        try:
+            crud.update_meeting(
+                db=db,
+                meeting_id=current_meeting_id,
+                description=f"{result}\n\n---\n_Biên bản được tạo tự động từ transcript_"
+            )
+        finally:
+            db.close()
+
+        # ✅ Trả về: status, ẩn modal, nội dung biên bản, MỞ accordion
+        return (
+            "✅ Đã tạo biên bản cuộc họp thành công!",
+            gr.update(visible=False),  # ẩn modal
+            result,  # HIỂN THỊ FULL BIÊN BẢN
+            gr.update(open=True)  # mở accordion
+        )
+
+    except Exception as e:
+        return (
+            f"❌ Lỗi khi tạo biên bản: {e}",
+            gr.update(visible=False),
+            "",
+            gr.update(open=False)
+        )
+
+
+def cancel_meeting_minutes():
+    """Hủy tạo biên bản"""
+    return (
+        "ℹ️ Đã hủy tạo biên bản",
+        gr.update(visible=False),   # ẩn modal
+        "",                         # clear minutes_display
+        gr.update(open=False)       # đóng accordion
+    )
+
 
 def poll_ui():
     with transcript_lock:
@@ -919,6 +989,25 @@ with gr.Blocks(title="ViMeeting - NotebookLM Style", css=custom_css, theme=gr.th
             start_btn = gr.Button("▶️ Bắt đầu ghi âm", variant="primary", size="lg")
             stop_btn = gr.Button("⏹️ Dừng ghi âm", variant="stop", size="lg")
             status_box = gr.Markdown("_Chưa bắt đầu_")
+        
+        # Modal xác nhận tạo biên bản
+        with gr.Group(visible=False) as minutes_modal:
+            gr.Markdown("### 📝 Tạo biên bản cuộc họp?")
+            gr.Markdown("Bạn có muốn tạo biên bản tổng hợp từ transcript của cuộc họp không?")
+            with gr.Row():
+                create_minutes_btn = gr.Button("✅ Có, tạo biên bản", variant="primary", size="lg")
+                cancel_minutes_btn = gr.Button("❌ Không, bỏ qua", variant="secondary", size="lg")
+            minutes_status = gr.Markdown("")
+        
+        # Box hiển thị biên bản
+        with gr.Accordion("📜 Biên bản cuộc họp", open=False) as minutes_accordion:
+            minutes_display = gr.Textbox(
+                show_label=False,
+                placeholder="Biên bản sẽ được hiển thị ở đây sau khi tạo...",
+                lines=20,
+                interactive=False,
+                max_lines=30
+            )
 
         with gr.Row():
             with gr.Column(scale=2):
@@ -1021,7 +1110,18 @@ with gr.Blocks(title="ViMeeting - NotebookLM Style", css=custom_css, theme=gr.th
     )
 
     start_btn.click(fn=start_recording, outputs=[transcript_display, summary_display, status_box])
-    stop_btn.click(fn=stop_recording, outputs=[status_box])
+    stop_btn.click(fn=stop_recording, outputs=[status_box, minutes_modal])
+
+    create_minutes_btn.click(
+        fn=generate_meeting_minutes,
+        outputs=[minutes_status, minutes_modal, minutes_display, minutes_accordion],
+        show_progress="full"  # 👈 cái này sẽ bật màn hình loading của Gradio
+    )
+
+    cancel_minutes_btn.click(
+        fn=cancel_meeting_minutes,
+        outputs=[minutes_status, minutes_modal, minutes_display, minutes_accordion]
+    )
 
     timer = gr.Timer(value=0.3, active=True)
     timer.tick(fn=poll_ui, outputs=[transcript_display, summary_display])
