@@ -11,6 +11,7 @@ import asyncio
 from queue import Queue, Empty
 import time
 import warnings
+import base64
 
 import gradio as gr
 import pynini
@@ -29,7 +30,7 @@ from api.services.rag_processor import RagProcessor
 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
 from api.database.database import SessionLocal
 from api.database import crud
-from llm_mapreduce.ollama_mapreduce import OllamaMapReducePipeline, load_config
+from api.services.ollama_mapreduce import OllamaMapReducePipeline, load_config
 
 
 warnings.filterwarnings("ignore")
@@ -337,7 +338,8 @@ def upload_documents(files):
             if all_chunks:
                 faiss_db = meeting_faiss.create_vectorstore(all_chunks)
                 meeting_faiss.faiss_save_local(faiss_db, "")
-                meeting_faiss.db = faiss_db
+                # meeting_faiss.db = faiss_db
+                meeting_faiss.load_vectorstore()
 
                 documents = ""
                 for i in chunks[:20]:
@@ -509,48 +511,75 @@ def load_meetings():
     except:
         return gr.update(choices=[])
 
+
 def select_meeting(meeting_id):
     global current_meeting_id, current_meeting_title, current_meeting_context
     global meeting_faiss, transcript_faiss, cache_faiss
-    
+
     if not meeting_id:
-        return "⚠️ Vui lòng chọn cuộc họp!", ""
-    
+        return "⚠️ Vui lòng chọn cuộc họp!", "", ""
+
     try:
         db = SessionLocal()
         try:
             meeting = crud.get_meeting(db, meeting_id)
             if not meeting:
-                return "❌ Không tìm thấy cuộc họp!", ""
-            
+                return "❌ Không tìm thấy cuộc họp!", "", ""
+
             current_meeting_id = meeting.id
             current_meeting_title = meeting.title
             current_meeting_context = meeting.meeting_context or ""
-            
+
             folder = f"meeting_{meeting.id}"
-            meeting_faiss = VectorStore(folder+"/documents", model_embedding)
-            transcript_faiss = VectorStore(folder+"/transcripts", model_embedding)
-            cache_faiss = VectorStore(folder+"/cache", model_embedding)
-            
+            meeting_faiss = VectorStore(folder + "/documents", model_embedding)
+            transcript_faiss = VectorStore(folder + "/transcripts", model_embedding)
+            cache_faiss = VectorStore(folder + "/cache", model_embedding)
+
             docs = crud.get_documents(db, meeting_id)
             transcript = crud.get_transcript(db, meeting_id)
             messages = crud.get_messages(db, meeting_id)
-            
-            info = f"""
-### 📋 {meeting.title}
 
-**Status:** `{meeting.status}`  
-**Tài liệu:** {len(docs)} files  
+            # HEADER ngắn
+            header_md = f"""### 📋 {meeting.title}
+
+ID: `{meeting.id}` · Status: `{meeting.status}`
+"""
+
+            # Danh sách tài liệu
+            if docs:
+                doc_lines = "\n".join([f"- {d.filename}" for d in docs[:20]])
+                docs_block = f"📄 **Danh sách tài liệu ({len(docs)}):**\n{doc_lines}"
+            else:
+                docs_block = "📄 **Danh sách tài liệu:** _Chưa có tài liệu nào_"
+
+            # Meeting context
+            if meeting.meeting_context:
+                ctx = meeting.meeting_context.strip()
+                if len(ctx) > 1200:
+                    ctx = ctx[:1200] + "..."
+                context_block = f"🧠 **Meeting Context:**\n\n{ctx}"
+            else:
+                context_block = "🧠 **Meeting Context:** _Chưa có meeting context_"
+
+            detail_md = f"""
 **Transcript:** {'✅' if transcript else '❌'} ({transcript.word_count if transcript else 0} từ)  
 **Tin nhắn:** {len(messages)} messages  
 
-{meeting.description if meeting.description else ''}
+**Mô tả:** {meeting.description or '_Không có mô tả_'}
+
+---
+{docs_block}
+
+---
+{context_block}
 """
-            return f"✅ Đã load cuộc họp ID={meeting.id}", info
+
+            status_msg = f"✅ Đã load cuộc họp ID={meeting.id}"
+            return status_msg, header_md, detail_md
         finally:
             db.close()
     except Exception as e:
-        return f"❌ Lỗi: {e}", ""
+        return f"❌ Lỗi: {e}", "", ""
 
 
 import re
@@ -588,19 +617,21 @@ _{desc or "Không có mô tả"}_
 
 def open_meeting_from_card(sample):
     """
-    Được gọi khi user click vào 1 card trong Dataset.
-    sample là [markdown_text].
+    sample là [markdown_text] từ Dataset.
     Trả về:
     - Ẩn home_view, hiện meeting_view
-    - Cập nhật meeting_info_box
-    - Cập nhật status_box (ở page ghi âm)
+    - Cập nhật meeting_header_box
+    - Cập nhật status_box
+    - Cập nhật nội dung chi tiết (meeting_detail_box) nhưng vẫn ẩn
     """
     if not sample or not sample[0]:
         return (
             gr.update(visible=True),    # home_view
             gr.update(visible=False),   # meeting_view
-            "",                         # meeting_info_box
+            "### 📋 Chưa chọn cuộc họp",# meeting_header_box
             "_Chưa bắt đầu_",           # status_box
+            "",                         # meeting_detail_box
+            gr.update(visible=False),   # meeting_detail_group
         )
     text = sample[0]
     m = re.search(r"ID:\s*`(\d+)`", text)
@@ -608,39 +639,66 @@ def open_meeting_from_card(sample):
         return (
             gr.update(visible=True),
             gr.update(visible=False),
-            "",
+            "### 📋 Chưa chọn cuộc họp",
             "_Chưa bắt đầu_",
+            "",
+            gr.update(visible=False),
         )
     meeting_id = int(m.group(1))
-    status_msg, info = select_meeting(meeting_id)
-    # info: chi tiết meeting, status_msg: "✅ Đã load..." (có thể hiển thị ở status_box)
+    status_msg, header_md, detail_md = select_meeting(meeting_id)
+
     return (
         gr.update(visible=False),   # home_view ẩn
         gr.update(visible=True),    # meeting_view hiện
-        info,                       # meeting_info_box
+        header_md,                  # meeting_header_box
         status_msg,                 # status_box
+        detail_md,                  # meeting_detail_box (chưa hiện, chỉ set content)
+        gr.update(visible=False),   # meeting_detail_group: vẫn ẩn, chờ bấm "xem chi tiết"
     )
 
 
+
 def create_meeting_and_go(title: str, description: str):
-    """
-    Tạo meeting mới rồi chuyển sang trang meeting_view luôn.
-    Dùng lại hàm create_meeting để không lặp logic.
-    """
     msg, _ = create_meeting(title, description)   # create_meeting đã set current_meeting_id
 
-    info = ""
+    header_md = ""
+    detail_md = ""
     try:
         if current_meeting_id is not None:
             db = SessionLocal()
             try:
                 meeting = crud.get_meeting(db, current_meeting_id)
                 if meeting:
-                    info = f"""### 📋 {meeting.title}
+                    docs = crud.get_documents(db, meeting.id)
 
-ID: `{meeting.id}` · `{meeting.status}`
+                    # HEADER ngắn
+                    header_md = f"""### 📋 {meeting.title}
 
-{meeting.description or ""}
+ID: `{meeting.id}` · Status: `{meeting.status}`
+"""
+
+                    # docs
+                    if docs:
+                        doc_lines = "\n".join([f"- {d.filename}" for d in docs[:20]])
+                        docs_block = f"📄 **Danh sách tài liệu ({len(docs)}):**\n{doc_lines}"
+                    else:
+                        docs_block = "📄 **Danh sách tài liệu:** _Chưa có tài liệu nào_"
+
+                    # context
+                    ctx = (meeting.meeting_context or "").strip()
+                    if ctx:
+                        if len(ctx) > 1200:
+                            ctx = ctx[:1200] + "..."
+                        context_block = f"🧠 **Meeting Context:**\n\n{ctx}"
+                    else:
+                        context_block = "🧠 **Meeting Context:** _Chưa có meeting context_"
+
+                    detail_md = f"""
+**Mô tả:** {meeting.description or '_Không có mô tả_'}
+---
+{docs_block}
+---
+{context_block}
 """
             finally:
                 db.close()
@@ -648,16 +706,19 @@ ID: `{meeting.id}` · `{meeting.status}`
         print("[create_meeting_and_go] ERROR:", e)
 
     return (
-        msg,                        # create_status (thông báo)
-        info,                       # meeting_info_box
+        msg,                        # create_status
+        header_md,                  # meeting_header_box
         gr.update(visible=False),   # home_view
         gr.update(visible=True),    # meeting_view
+        detail_md,                  # meeting_detail_box
+        gr.update(visible=False),   # meeting_detail_group (ẩn, chờ bấm "xem chi tiết")
     )
 
 
 def go_home():
     """
     Quay lại trang chủ, reset transcript/summary/chatbot & dừng ghi âm nếu còn.
+    Đồng thời ẩn box chi tiết meeting.
     """
     global transcript_text, summary_text
     stop_event.set()
@@ -673,10 +734,26 @@ def go_home():
         "",                         # transcript_display
         "",                         # summary_display
         [],                         # chatbot (clear history)
+        gr.update(visible=False),   # meeting_detail_group
+        "",                         # meeting_detail_box
     )
+
 # =========================
 # GRADIO UI - NotebookLM Style
 # =========================
+
+# =========================
+# HELPER: ENCODE LOGO
+# =========================
+def get_logo_base64():
+    logo_path = "../images/vimeeting_logo.png"
+    try:
+        with open(logo_path, "rb") as f:
+            encoded = base64.b64encode(f.read()).decode()
+            return f"data:image/png;base64,{encoded}"
+    except Exception as e:
+        print(f"[LOGO] Error loading logo: {e}")
+        return ""
 
 custom_css = """
 .gradio-container {
@@ -700,6 +777,10 @@ custom_css = """
 }
 .meeting-header h1 {
     margin: 0;
+}
+.meeting-header img {
+    border-radius: 8px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.2);
 }
 .home-title {
     font-size: 20px;
@@ -743,20 +824,22 @@ custom_css = """
 }
 """
 
-with gr.Blocks(title="Meeting Assistant", css=custom_css, theme=gr.themes.Soft()) as demo:
-    # ====== HEADER (luôn có ở cả 2 page) ======
-    with gr.Row(elem_classes=["meeting-header"]):
-        gr.Markdown("""
-        # 📝 Meeting Assistant  
-        ### Powered by AI - NotebookLM Style
-        """)
-        with gr.Column(scale=0.5):
-            gr.Markdown(
-                "Tạo, quản lý và ghi âm các cuộc họp của bạn giống như NotebookLM.",
-                elem_id=None
-            )
+with gr.Blocks(title="ViMeeting - NotebookLM Style", css=custom_css, theme=gr.themes.Soft()) as demo:
+    logo_base64 = get_logo_base64()
+    gr.HTML(f"""
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <img src="{logo_base64}" alt="logo" style="height:48px; width:auto;">
+            <div>
+                <h1 style="margin:0; font-size:28px;">ViMeeting</h1>
+                <p style="margin:0; font-size:14px; color:#e0e0e0;">Powered by DataFlow</p>
+            </div>
+        </div>
+    """)
+    with gr.Column(scale=0.5):
+        gr.Markdown("Tạo, quản lý và ghi âm các cuộc họp của bạn.")
 
-    # ==================== HOME PAGE (GRID MEETING) ====================
+
+    # ==================== HOME PAGE ====================
     with gr.Column(visible=True) as home_view:
         gr.Markdown(
             "## Sổ ghi chú của tôi\n"
@@ -764,26 +847,34 @@ with gr.Blocks(title="Meeting Assistant", css=custom_css, theme=gr.themes.Soft()
             elem_classes=["home-title"]
         )
 
+        # Hàng nút tạo và làm mới
         with gr.Row():
-            with gr.Column(scale=2):
-                gr.Markdown("### ➕ Tạo cuộc họp mới")
+            create_new_btn = gr.Button("➕ Tạo cuộc họp mới", variant="primary", size="sm", scale=0)
+            refresh_home_btn = gr.Button("🔄", size="sm", variant="secondary", scale=0)
+
+        # Form tạo cuộc họp — ẩn mặc định
+        # === FORM TẠO CUỘC HỌP ===
+        with gr.Group(visible=False) as create_meeting_box:
+            with gr.Column():  # 👈 Bao tất cả trong 1 Column duy nhất, không dùng Row đầu tiên
                 meeting_title = gr.Textbox(
                     label="Tiêu đề cuộc họp",
                     placeholder="VD: Họp kế hoạch Q1 2025",
                     lines=1
                 )
+
                 meeting_desc = gr.Textbox(
                     label="Mô tả (tùy chọn)",
                     placeholder="Thảo luận kế hoạch kinh doanh và mục tiêu...",
                     lines=3
                 )
-                create_btn = gr.Button("➕ Tạo cuộc họp mới", variant="primary", size="lg")
-                create_status = gr.Markdown("")
-            with gr.Column(scale=1, min_width=200):
-                gr.Markdown("### ⚙️ Tùy chọn")
-                refresh_home_btn = gr.Button("🔄 Làm mới danh sách", variant="secondary")
-                gr.Markdown("_(Danh sách sẽ tự load khi mở app)_")
 
+                with gr.Row():
+                    create_btn = gr.Button("✅ Tạo", variant="primary")
+                    cancel_create_btn = gr.Button("❌ Hủy", variant="secondary")
+
+                create_status = gr.Markdown("")
+
+        # Danh sách meetings
         gr.Markdown("### 📚 Các cuộc họp của tôi")
 
         meetings_grid = gr.Dataset(
@@ -793,14 +884,20 @@ with gr.Blocks(title="Meeting Assistant", css=custom_css, theme=gr.themes.Soft()
             elem_id="meeting-grid"
         )
 
-    # ==================== MEETING PAGE (UPLOAD + GHI ÂM + CHATBOT) ====================
+    # ==================== MEETING PAGE ====================
     with gr.Column(visible=False) as meeting_view:
-        # Top bar: Back + info
+        # Top bar: Back + header + nút xem chi tiết
         with gr.Row():
-            back_btn = gr.Button("⬅️ Về trang chủ", variant="secondary")
-            meeting_info_box = gr.Markdown("### 📋 Chưa chọn cuộc họp")
+            back_btn = gr.Button("⬅️ Về trang chủ", variant="secondary", size="sm", scale=0)
+            meeting_header_box = gr.Markdown("### 📋 Chưa chọn cuộc họp")
 
-        # Upload section (Accordion giống NotebookLM “sources”)
+        with gr.Row():
+            detail_btn = gr.Button("ℹ️ Xem chi tiết", size="sm", variant="secondary", scale=0)
+
+        # Box chi tiết (ẩn mặc định)
+        with gr.Group(visible=False) as meeting_detail_group:
+            meeting_detail_box = gr.Markdown("")
+
         with gr.Accordion("📎 Tài liệu cuộc họp", open=False):
             with gr.Row(elem_classes=["upload-zone"]):
                 with gr.Column():
@@ -817,18 +914,13 @@ with gr.Blocks(title="Meeting Assistant", css=custom_css, theme=gr.themes.Soft()
                 interactive=False
             )
 
-        # Control buttons ghi âm
+        # Ghi âm + Q&A
         with gr.Row():
-            with gr.Column(scale=1):
-                start_btn = gr.Button("▶️ Bắt đầu ghi âm", variant="primary", size="lg")
-            with gr.Column(scale=1):
-                stop_btn = gr.Button("⏹️ Dừng ghi âm", variant="stop", size="lg")
-            with gr.Column(scale=2):
-                status_box = gr.Markdown("_Chưa bắt đầu_")
+            start_btn = gr.Button("▶️ Bắt đầu ghi âm", variant="primary", size="lg")
+            stop_btn = gr.Button("⏹️ Dừng ghi âm", variant="stop", size="lg")
+            status_box = gr.Markdown("_Chưa bắt đầu_")
 
-        # Main content: Transcript – Chat – Summary
-        with gr.Row(equal_height=True):
-            # Left: Transcript
+        with gr.Row():
             with gr.Column(scale=2):
                 gr.Markdown("### 📄 Transcript")
                 transcript_display = gr.Textbox(
@@ -839,7 +931,6 @@ with gr.Blocks(title="Meeting Assistant", css=custom_css, theme=gr.themes.Soft()
                     max_lines=30
                 )
 
-            # Center: Chat
             with gr.Column(scale=3, elem_classes=["chat-container"]):
                 gr.Markdown("### 💬 Hỏi đáp")
                 chatbot = gr.Chatbot(
@@ -857,7 +948,6 @@ with gr.Blocks(title="Meeting Assistant", css=custom_css, theme=gr.themes.Soft()
                     )
                     send_btn = gr.Button("📤", scale=1, variant="primary")
 
-            # Right: Summary
             with gr.Column(scale=2):
                 gr.Markdown("### 📊 Tóm tắt & Insights")
                 summary_display = gr.Textbox(
@@ -869,34 +959,59 @@ with gr.Blocks(title="Meeting Assistant", css=custom_css, theme=gr.themes.Soft()
                 )
 
     # ==================== EVENT HANDLERS ====================
+    # Toggle xem/ẩn chi tiết
+    detail_visible = gr.State(False)
 
-    # --- HOME PAGE events ---
-    demo.load(
-        fn=load_meeting_cards,
-        outputs=[meetings_grid]
-    )
 
-    refresh_home_btn.click(
-        fn=load_meeting_cards,
-        outputs=[meetings_grid]
-    )
+    def toggle_details(current_visible):
+        """Nếu đang ẩn thì hiện, nếu đang hiện thì ẩn."""
+        if current_visible:
+            # đang mở => ẩn lại
+            return gr.update(visible=False), False, "ℹ️ Xem chi tiết"
+        else:
+            # đang ẩn => mở ra
+            return gr.update(visible=True), True, "🔽 Ẩn chi tiết"
+
+
+    demo.load(fn=load_meeting_cards, outputs=[meetings_grid])
+    refresh_home_btn.click(fn=load_meeting_cards, outputs=[meetings_grid])
+
+
+    # Toggle hiển thị box tạo cuộc họp
+    def show_create_box():
+        return gr.update(visible=True)
+
+
+    def hide_create_box():
+        return gr.update(visible=False)
+
+
+    create_new_btn.click(fn=show_create_box, outputs=[create_meeting_box])
+    cancel_create_btn.click(fn=hide_create_box, outputs=[create_meeting_box])
 
     create_btn.click(
         fn=create_meeting_and_go,
         inputs=[meeting_title, meeting_desc],
-        outputs=[create_status, meeting_info_box, home_view, meeting_view]
+        outputs=[
+            create_status,  # msg tạo cuộc họp
+            meeting_header_box,  # header ngắn trên meeting page
+            home_view,  # ẩn
+            meeting_view,  # hiện
+            meeting_detail_box,  # nội dung chi tiết (context + docs)
+            meeting_detail_group  # group chi tiết (ẩn/hiện)
+        ]
     )
 
     meetings_grid.select(
         fn=open_meeting_from_card,
         inputs=[meetings_grid],
-        outputs=[home_view, meeting_view, meeting_info_box, status_box]
+        outputs=[home_view, meeting_view, meeting_header_box, status_box, meeting_detail_box, meeting_detail_group]
     )
 
-    # --- MEETING PAGE events ---
     back_btn.click(
         fn=go_home,
-        outputs=[home_view, meeting_view, status_box, transcript_display, summary_display, chatbot]
+        outputs=[home_view, meeting_view, status_box, transcript_display, summary_display, chatbot,
+                 meeting_detail_group, meeting_detail_box]
     )
 
     upload_btn.click(
@@ -905,34 +1020,19 @@ with gr.Blocks(title="Meeting Assistant", css=custom_css, theme=gr.themes.Soft()
         outputs=[upload_status, context_box]
     )
 
-    start_btn.click(
-        fn=start_recording,
-        outputs=[transcript_display, summary_display, status_box]
-    )
+    start_btn.click(fn=start_recording, outputs=[transcript_display, summary_display, status_box])
+    stop_btn.click(fn=stop_recording, outputs=[status_box])
 
-    stop_btn.click(
-        fn=stop_recording,
-        outputs=[status_box]
-    )
-
-    # Polling for real-time updates
     timer = gr.Timer(value=0.3, active=True)
-    timer.tick(
-        fn=poll_ui,
-        outputs=[transcript_display, summary_display]
-    )
+    timer.tick(fn=poll_ui, outputs=[transcript_display, summary_display])
 
-    # Chat events
-    send_btn.click(
-        fn=chat_qa,
-        inputs=[chatbot, chat_msg],
-        outputs=[chatbot, chat_msg]
-    )
+    send_btn.click(fn=chat_qa, inputs=[chatbot, chat_msg], outputs=[chatbot, chat_msg])
+    chat_msg.submit(fn=chat_qa, inputs=[chatbot, chat_msg], outputs=[chatbot, chat_msg])
 
-    chat_msg.submit(
-        fn=chat_qa,
-        inputs=[chatbot, chat_msg],
-        outputs=[chatbot, chat_msg]
+    detail_btn.click(
+        fn=toggle_details,
+        inputs=[detail_visible],
+        outputs=[meeting_detail_group, detail_visible, detail_btn]
     )
 
 if __name__ == "__main__":

@@ -38,6 +38,20 @@ class VectorStore:
             self.cosine_retriever = None
             self.bm25_retriever = None
 
+    def load_vectorstore(self):
+        try:
+            self.db = FAISS.load_local(f'{VECTOR_DATABASE}/{self.meeting_id}', self.model_embedding,
+                                       allow_dangerous_deserialization=True)
+            self.cosine_retriever = self.db.as_retriever(search_kwargs=SEARCH_KWARGS, search_type=SEARCH_TYPE)
+            documents = list(self.db.docstore._dict.values())
+            self.bm25_retriever = BM25Retriever.from_documents(documents)
+            self.bm25_retriever.k = 25
+        except Exception as e:
+            print(f"Can't Load VectorDB: {e}")
+            self.db = None
+            self.cosine_retriever = None
+            self.bm25_retriever = None
+
     async def hybrid_search(self, question):
         ensemble_retriever = EnsembleRetriever(retrievers=[self.bm25_retriever, self.cosine_retriever],
                                             weights=[0.5, 0.5])
