@@ -429,7 +429,7 @@ if __name__ == "__main__":
         document = f.read()
     
     # Chạy pipeline
-    question = "Tóm tắt các ý chính của cuộc họp, trình bày rõ ràng thành từng mục nếu cần thiết"
+    question = "Tóm tắt các ý chính của cuộc họp, trình bày rõ ràng thành từng mục nếu cần thiết, càng chi tiết càng tốt"
     result = pipeline.run(document, question, chunk_size=4096)
     
     print("\n" + "="*60)

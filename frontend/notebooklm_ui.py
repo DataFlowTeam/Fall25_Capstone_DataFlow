@@ -12,6 +12,7 @@ from queue import Queue, Empty
 import time
 import warnings
 import base64
+from datetime import datetime
 
 import gradio as gr
 import pynini
@@ -202,6 +203,23 @@ def summarizer_loop():
                     summary_text = f"{summary_text}\n\n──────────\n{summary.strip()}"
                 else:
                     summary_text = summary.strip()
+            
+            # Lưu summary vào database
+            if current_meeting_id and summary.strip():
+                try:
+                    db = SessionLocal()
+                    try:
+                        crud.create_summarize(
+                            db=db,
+                            meeting_id=current_meeting_id,
+                            content=summary.strip(),
+                            summary_type="realtime",
+                            title=f"Summary at {datetime.now().strftime('%H:%M:%S')}"
+                        )
+                    finally:
+                        db.close()
+                except Exception as db_err:
+                    print(f"[Summarizer] DB ERROR: {db_err}")
         except Exception as e:
             print(f"[Summarizer] ERROR: {e}")
         finally:
@@ -342,11 +360,11 @@ def upload_documents(files):
                 meeting_faiss.load_vectorstore()
 
                 documents = ""
-                for i in chunks[:20]:
+                for i in chunks[:25]:
                     documents += i.page_content + "\n-----\n"
 
 
-                question = "Tài liệu này nói về vấn đề gì, hãy trả lời theo format 'Meeting Context:'"
+                question = "Tài liệu này nói về vấn đề gì, có những khái niệm nào cần lưu ý, hãy trả lời theo format 'Meeting Context:'"
                 current_meeting_context = mapreduce_pipeline.run(documents, question, chunk_size=4096)
 
                 crud.update_meeting(
@@ -585,16 +603,17 @@ def load_meetings():
 def select_meeting(meeting_id):
     global current_meeting_id, current_meeting_title, current_meeting_context
     global meeting_faiss, transcript_faiss, cache_faiss
+    global transcript_text, summary_text
 
     if not meeting_id:
-        return "⚠️ Vui lòng chọn cuộc họp!", "", ""
+        return "⚠️ Vui lòng chọn cuộc họp!", "", "", "", "", []
 
     try:
         db = SessionLocal()
         try:
             meeting = crud.get_meeting(db, meeting_id)
             if not meeting:
-                return "❌ Không tìm thấy cuộc họp!", "", ""
+                return "❌ Không tìm thấy cuộc họp!", "", "", "", "", []
 
             current_meeting_id = meeting.id
             current_meeting_title = meeting.title
@@ -608,6 +627,32 @@ def select_meeting(meeting_id):
             docs = crud.get_documents(db, meeting_id)
             transcript = crud.get_transcript(db, meeting_id)
             messages = crud.get_messages(db, meeting_id)
+            summaries = crud.get_summarizes(db, meeting_id)
+
+            # Load transcript vào transcript_text
+            with transcript_lock:
+                transcript_text = transcript.content if transcript else ""
+            
+            # Load summaries vào summary_text
+            with summary_lock:
+                if summaries:
+                    summary_parts = []
+                    for s in summaries:
+                        summary_parts.append(s.content)
+                    summary_text = "\n\n──────────\n".join(summary_parts)
+                else:
+                    summary_text = ""
+            
+            # Tạo chatbot history từ messages
+            chatbot_history = []
+            for msg in messages:
+                if msg.role == "human":
+                    # Tìm message AI tiếp theo
+                    ai_msg = None
+                    msg_index = messages.index(msg)
+                    if msg_index + 1 < len(messages) and messages[msg_index + 1].role == "ai":
+                        ai_msg = messages[msg_index + 1]
+                        chatbot_history.append((msg.content, ai_msg.content))
 
             # HEADER ngắn
             header_md = f"""### 📋 {meeting.title}
@@ -634,6 +679,7 @@ ID: `{meeting.id}` · Status: `{meeting.status}`
             detail_md = f"""
 **Transcript:** {'✅' if transcript else '❌'} ({transcript.word_count if transcript else 0} từ)  
 **Tin nhắn:** {len(messages)} messages  
+**Summaries:** {len(summaries)} tóm tắt
 
 **Mô tả:** {meeting.description or '_Không có mô tả_'}
 
@@ -645,11 +691,11 @@ ID: `{meeting.id}` · Status: `{meeting.status}`
 """
 
             status_msg = f"✅ Đã load cuộc họp ID={meeting.id}"
-            return status_msg, header_md, detail_md
+            return status_msg, header_md, detail_md, transcript_text, summary_text, chatbot_history
         finally:
             db.close()
     except Exception as e:
-        return f"❌ Lỗi: {e}", "", ""
+        return f"❌ Lỗi: {e}", "", "", "", "", []
 
 
 import re
@@ -693,6 +739,7 @@ def open_meeting_from_card(sample):
     - Cập nhật meeting_header_box
     - Cập nhật status_box
     - Cập nhật nội dung chi tiết (meeting_detail_box) nhưng vẫn ẩn
+    - Load transcript, summary và chatbot history
     """
     if not sample or not sample[0]:
         return (
@@ -702,6 +749,9 @@ def open_meeting_from_card(sample):
             "_Chưa bắt đầu_",           # status_box
             "",                         # meeting_detail_box
             gr.update(visible=False),   # meeting_detail_group
+            "",                         # transcript_display
+            "",                         # summary_display
+            [],                         # chatbot
         )
     text = sample[0]
     m = re.search(r"ID:\s*`(\d+)`", text)
@@ -713,9 +763,12 @@ def open_meeting_from_card(sample):
             "_Chưa bắt đầu_",
             "",
             gr.update(visible=False),
+            "",
+            "",
+            [],
         )
     meeting_id = int(m.group(1))
-    status_msg, header_md, detail_md = select_meeting(meeting_id)
+    status_msg, header_md, detail_md, transcript_txt, summary_txt, chatbot_hist = select_meeting(meeting_id)
 
     return (
         gr.update(visible=False),   # home_view ẩn
@@ -724,6 +777,9 @@ def open_meeting_from_card(sample):
         status_msg,                 # status_box
         detail_md,                  # meeting_detail_box (chưa hiện, chỉ set content)
         gr.update(visible=False),   # meeting_detail_group: vẫn ẩn, chờ bấm "xem chi tiết"
+        transcript_txt,             # transcript_display
+        summary_txt,                # summary_display
+        chatbot_hist,               # chatbot history
     )
 
 
@@ -1094,7 +1150,8 @@ with gr.Blocks(title="ViMeeting - NotebookLM Style", css=custom_css, theme=gr.th
     meetings_grid.select(
         fn=open_meeting_from_card,
         inputs=[meetings_grid],
-        outputs=[home_view, meeting_view, meeting_header_box, status_box, meeting_detail_box, meeting_detail_group]
+        outputs=[home_view, meeting_view, meeting_header_box, status_box, meeting_detail_box, meeting_detail_group,
+                transcript_display, summary_display, chatbot]
     )
 
     back_btn.click(
