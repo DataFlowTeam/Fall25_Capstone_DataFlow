@@ -288,8 +288,8 @@ class ChunkFormer:
                                 vad_threshold: float = 0.01, vad_min_silence_blocks: int = 2,
 
                                 # Punctuation
-                                punc_model=None, use_sbd: bool = False, punc_window_words: int = 240,
-                                punc_commit_margin_words: int = 120,
+                                punc_model=None, use_sbd: bool = False, punc_window_words: int = 50,
+                                punc_commit_margin_words: int = 25,
 
                                 # ITN
                                 itn_classifier=None, itn_verbalizer=None,
