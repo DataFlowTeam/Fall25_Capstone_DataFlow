@@ -17,6 +17,8 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_experimental.text_splitter import SemanticChunker
 import tiktoken
 from api.utils.raw_utterances_processing import *
+import torch
+import gc
 
 class VectorStore:
     def __init__(self, meeting_id: str, model_embedding):
@@ -144,8 +146,19 @@ class VectorStore:
         return chunks
 
     # Lưu vào vectorstore
+    @torch.no_grad()
     def create_vectorstore(self, chunks):
+        """
+        Tạo FAISS vectorstore từ chunks.
+        Sử dụng @torch.no_grad() để tắt gradient computation.
+        """
         db = FAISS.from_documents(chunks, self.model_embedding)
+        
+        # ✅ Giải phóng VRAM GPU ngay sau khi embedding xong
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        
         return db
 
     def faiss_save_local(self, db, type_id):

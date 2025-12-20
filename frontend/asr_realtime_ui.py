@@ -101,11 +101,11 @@ def asr_worker():
             max_overlap_match=32,
             # VAD
             vad_threshold=0.01,
-            vad_min_silence_blocks=2,
+            vad_min_silence_blocks=6,
             # Punc + ITN
             punc_model=punc_model,
-            punc_window_words=100,
-            punc_commit_margin_words=50,
+            punc_window_words=50,
+            punc_commit_margin_words=25,
             itn_classifier=itn_classifier,
             itn_verbalizer=itn_verbalizer,
             # Control

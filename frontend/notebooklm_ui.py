@@ -13,6 +13,8 @@ import time
 import warnings
 import base64
 from datetime import datetime
+import torch
+import gc
 
 import gradio as gr
 import pynini
@@ -69,9 +71,12 @@ punc_model = PunctCapSegModelONNX.from_pretrained(
 )
 itn_classifier, itn_verbalizer = init_itn_model(ITN_REPO)
 llm = LanguageModelOllama("shmily_006/Qw3:4b_4bit", temperature=0.5)
+
+# Embedding model với device management để tiết kiệm VRAM
 model_embedding = HuggingFaceEmbeddings(
     model_name=MODEL_EMBEDDING,
-    model_kwargs={"trust_remote_code": True}
+    model_kwargs={"trust_remote_code": True, "device": "cuda"},
+    encode_kwargs={"normalize_embeddings": True, "device": "cuda"}
 )
 
 config = load_config("/home/bojjoo/Code/EduAssist/api/services/config_ollama_mapreduce.yaml")
@@ -105,6 +110,16 @@ def run_async(coro, timeout=None):
     return asyncio.run_coroutine_threadsafe(coro, _ASYNC_LOOP).result(timeout=timeout)
 
 start_async_loop()
+
+# =========================
+# GPU MEMORY MANAGEMENT
+# =========================
+def cleanup_gpu_memory():
+    """Giải phóng VRAM GPU sau khi embedding xong"""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    gc.collect()
 
 # =========================
 # UI STATE
@@ -359,6 +374,10 @@ def upload_documents(files):
                 # meeting_faiss.db = faiss_db
                 meeting_faiss.load_vectorstore()
 
+                # ✅ GIẢI PHÓNG VRAM SAU KHI EMBEDDING XONG
+                cleanup_gpu_memory()
+                print(f"[GPU] Freed VRAM after embedding {len(all_chunks)} chunks")
+
                 documents = ""
                 for i in chunks[:25]:
                     documents += i.page_content + "\n-----\n"
@@ -478,7 +497,7 @@ def generate_meeting_minutes():
             )
 
         # Chạy MapReduce pipeline
-        question = "Tóm tắt các ý chính của cuộc họp, trình bày rõ ràng thành từng mục nếu cần thiết"
+        question = "Tóm tắt các ý chính của cuộc họp, trình bày rõ ràng thành từng mục"
         result = mapreduce_pipeline.run(document, question, chunk_size=4096)
 
         # Lưu biên bản vào database (vd: description)
