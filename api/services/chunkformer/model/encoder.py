@@ -274,7 +274,7 @@ class BaseEncoder(torch.nn.Module):
         r_cnn_cache = torch.stack(r_cnn_cache, dim=0)
         return xs, xs_lens, n_chunks, r_att_cache, r_cnn_cache, offset
     
-    def ctc_forward(self, xs, xs_lens=None, n_chunks=None):
+    def ctc_forward(self, xs, xs_lens=None, n_chunks=None,cif_out_to_enc=None):
         ctc_probs = self.ctc.log_softmax(xs)
         topk_prob, topk_index = ctc_probs.topk(1, dim=2)  # (B, maxlen, 1)
         hyps = topk_index.squeeze(-1)  # (B, maxlen)

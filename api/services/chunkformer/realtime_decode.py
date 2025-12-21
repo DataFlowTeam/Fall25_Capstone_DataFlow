@@ -9,7 +9,7 @@ import queue
 import contextlib
 from collections import deque
 import traceback
-
+from cif_boundary_func import *
 from api.private_config import *  # CHUNKFORMER_CHECKPOINT, ITN_REPO, ...
 
 import numpy as np
@@ -25,6 +25,8 @@ import pynini
 from pynini.lib.rewrite import top_rewrite
 from pynini.lib import rewrite
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from cif_boundary_func import init_cif_boundary_from_ckpt, split_encoder_outs_by_cif_fires, mark_flush_tail
+
 
 # ---------- Bootstrap import path (EduAssist as Sources Root) ----------
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
@@ -188,11 +190,12 @@ def asr_worker(args, asr_model, char_dict, hypothesis_queue):
     q_audio  = deque(maxlen=1 + lookahead_blk)
     full_hyp = ""
     last_sent = ""
-
+    cif_carry = None
     print("ASR worker started. Listening...")
     try:
         with sd.InputStream(samplerate=sr, channels=1, dtype="float32",
                             blocksize=block_samples) as stream:
+
             while not args.stop_event.is_set():
                 audio_block, _ = stream.read(block_samples)
 
@@ -238,8 +241,12 @@ def asr_worker(args, asr_model, char_dict, hypothesis_queue):
                     if enc_out.size(1) > chunk_size:
                         enc_out = enc_out[:, :chunk_size]
                     offset = offset - T + enc_out.size(1)
+                    seg_feats_list, cif_carry, spans = split_encoder_outs_by_cif_fires(
+                        enc_out,
+                        cif_carry
+                    )
 
-                    hyp_step = asr_model.encoder.ctc_forward(enc_out).squeeze(0).cpu()
+                    hyp_step = asr_model.encoder.ctc_forward(enc_out,cif_out_to_enc=seg_feats_list).squeeze(0).cpu()
 
                 chunk_text = get_output([hyp_step], char_dict)[0]
                 ovl = longest_suffix_prefix_overlap(full_hyp, chunk_text)
@@ -283,6 +290,12 @@ def init_asr_model(args):
 
     symtab = read_symbol_table(vocab)
     char_dict = {v: k for k, v in symtab.items()}
+
+    init_cif_boundary_from_ckpt(
+        cif_ckpt_path= CIF_CHECKPOINT,
+        encoder_out_dim=model.encoder._output_size,  # hoặc encoder_outs.shape[-1]
+        device="cuda",
+    )
     return model, char_dict
 
 
