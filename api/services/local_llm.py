@@ -1,9 +1,10 @@
 from pydantic import BaseModel
 import httpx
 import requests
-from typing import AsyncGenerator, Dict, Optional
+from typing import AsyncGenerator, Dict, Optional, List
 from api.services import *
 import json
+import asyncio
 
 class LanguageModelOllama:
     def __init__(self, model: str, stream: bool = False, temperature: float = 0.7,
@@ -139,6 +140,14 @@ class LanguageModelOllama:
         if last_exc:
             raise last_exc
 
+    async def batch_generate_async(self, prompts: List[str]) -> List[str]:
+        """
+        Xử lý nhiều prompts SONG SONG với async.
+        Sử dụng asyncio.gather để chạy tất cả requests cùng lúc.
+        """
+        tasks = [self.async_generate(prompt) for prompt in prompts]
+        results = await asyncio.gather(*tasks)
+        return list(results)
     # ---------------------------
     # Input Handler
     # ---------------------------

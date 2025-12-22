@@ -6,32 +6,65 @@ GIỮ ĐÚNG LOGIC GỐC từ Generator.py, pipeline.py, utils.py
 KẾ THỪA LanguageModelOllama từ local_llm.py
 """
 
-import sys
-import os
+import copy
 import re
 import yaml
+import asyncio
 from typing import List, Optional, Dict, Any
 from transformers import AutoTokenizer
 
-# Add parent directory to path to import from api.services
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-try:
-    from api.services.local_llm import LanguageModelOllama
-    OLLAMA_AVAILABLE = True
-except ImportError:
-    OLLAMA_AVAILABLE = False
-    print("Warning: Cannot import LanguageModelOllama from api.services.local_llm")
+# ============= OLLAMA CLIENT WRAPPER =============
+
+class OllamaClient:
+    """Wrapper sử dụng LanguageModelOllama với async batch processing"""
+
+    def __init__(self, model: str, host: str = "http://localhost:11434",
+                 temperature: float = 0.7, max_tokens: int = 1024):
+        from api.services.local_llm import LanguageModelOllama
+
+        self.model = model
+        self.host = host
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+
+        # Sử dụng LanguageModelOllama thay vì ollama.Client
+        self.client = LanguageModelOllama(
+            model=model,
+            host=host,
+            temperature=temperature,
+            request_timeout=120.0,
+            max_retries=2
+        )
+
+    async def generate_async(self, prompt: str) -> str:
+        """Generate response từ Ollama (async)"""
+        try:
+            return await self.client.async_generate(prompt)
+        except Exception as e:
+            print(f"Error calling Ollama: {e}")
+            return "[ERROR]"
+
+    async def batch_generate_async(self, prompts: List[str]) -> List[str]:
+        """Generate responses cho nhiều prompts (SONG SONG với async)"""
+        print(f"    Processing {len(prompts)} prompts in parallel...")
+        results = await self.client.batch_generate_async(prompts)
+        return results
+
+    async def aclose(self):
+        """Cleanup async client"""
+        await self.client.aclose()
+
+
 # ============= GENERATOR (LOGIC GỐC TỪ Generator.py) =============
 
 class OllamaMapReduceGenerator:
     """
     Generator cho MapReduce pipeline với Ollama
     GIỮ ĐÚNG LOGIC GỐC từ Generator.py
-    KẾ THỪA LanguageModelOllama từ local_llm.py
     """
 
-    def __init__(self, ollama_client: LanguageModelOllama, tokenizer, config: Dict):
+    def __init__(self, ollama_client: OllamaClient, tokenizer, config: Dict):
         self.client = ollama_client
         self.tokenizer = tokenizer
         self.config = config
@@ -235,24 +268,23 @@ class OllamaMapReduceGenerator:
         new_result_doc_list.append(_sub_result_docs)
         return new_result_doc_list
 
-    def mr_map(self, context: List[str], question) -> List[str]:
-        """Logic gốc từ Generator.mr_map"""
+    async def mr_map(self, context: List[str], question) -> List[str]:
+        """Logic gốc từ Generator.mr_map - ASYNC VERSION"""
         prompt = self.config['map_prompt']
         print("=====Map=====")
 
-        results = []
+        prompts = []
         for i, item in enumerate(context):
             formatted_prompt = prompt.format(question=question, context=item)
-            print(f"    Processing {i+1}/{len(context)}...")
-            res = self.client.generate(formatted_prompt)
-            results.append(res)
+            prompts.append(formatted_prompt)
 
-        print(f'map result: {len(results)} items')
-        return results
+        res = await self.client.batch_generate_async(prompts)
+        print(f'map result: {len(res)} items')
+        return res
 
-    def mr_collapse(self, docs: List[str], question: str, token_max: Optional[int] = None,
+    async def mr_collapse(self, docs: List[str], question: str, token_max: Optional[int] = None,
                     max_retries: Optional[int] = None) -> List[str]:
-        """Logic gốc từ Generator.mr_collapse với while loop đệ quy"""
+        """Logic gốc từ Generator.mr_collapse với while loop đệ quy - ASYNC VERSION"""
         result_docs = docs
 
         prompt = self.config['collapse_prompt']
@@ -268,9 +300,9 @@ class OllamaMapReduceGenerator:
 
             for index, docs in enumerate(new_result_doc_list):
                 formatted_prompt = prompt.format(question=question, context=self.join_docs(docs))
-                print(f"    Collapsing batch {index+1}/{len(new_result_doc_list)}...")
-                res = self.client.generate(formatted_prompt)
-                result_docs.append(res)
+                current_batch.append(formatted_prompt)
+
+            result_docs = await self.client.batch_generate_async(current_batch)
 
             num_tokens = self.get_prompt_length_format(result_docs)
             retries += 1
@@ -281,14 +313,14 @@ class OllamaMapReduceGenerator:
         print(f"Collapsed to {len(result_docs)} items")
         return result_docs
 
-    def mr_reduce(self, context: List[str], question):
-        """Logic gốc từ Generator.mr_reduce"""
+    async def mr_reduce(self, context: List[str], question):
+        """Logic gốc từ Generator.mr_reduce - ASYNC VERSION"""
         prompt = self.config['reduce_prompt']
         context_formatted = ''.join(self.format_chunk_information(context))
         print("=====Reduce=====")
 
         formatted_prompt = prompt.format(context=context_formatted, question=question)
-        result = self.client.generate(formatted_prompt)
+        result = await self.client.generate_async(formatted_prompt)
 
         print(f"Reduce complete")
         return result
@@ -310,18 +342,15 @@ class OllamaMapReducePipeline:
                 - gen_args: {temperature, max_tokens}
                 - map_prompt, collapse_prompt, reduce_prompt
         """
-        if not OLLAMA_AVAILABLE:
-            raise ImportError("Cannot import LanguageModelOllama. Please check api.services.local_llm")
-
-        # Khởi tạo Ollama client từ local_llm
+        # Khởi tạo Ollama client
         ollama_config = config.get('ollama', {})
         gen_args = config.get('gen_args', {})
 
-        self.ollama_client = LanguageModelOllama(
+        self.ollama_client = OllamaClient(
             model=ollama_config.get('model', 'shmily_006/Qw3:4b_4bit'),
             host=ollama_config.get('host', 'http://localhost:11434'),
             temperature=gen_args.get('temperature', 0.5),
-            stream=False
+            max_tokens=gen_args.get('max_tokens', 1024)
         )
 
         # Khởi tạo tokenizer
@@ -359,9 +388,9 @@ class OllamaMapReducePipeline:
                 new_chunks.append(chunk)
         return new_chunks
 
-    def run(self, doc: str, question: str, chunk_size: int = 2048) -> str:
+    async def run_async(self, doc: str, question: str, chunk_size: int = 2048) -> str:
         """
-        Logic gốc từ BasePipeline.run
+        Logic gốc từ BasePipeline.run - ASYNC VERSION với parallel processing
 
         Args:
             doc: Document text
@@ -378,27 +407,37 @@ class OllamaMapReducePipeline:
         print(f"🔧 Chunk size: {chunk_size} tokens")
         print(f"{'='*60}\n")
 
-        # 1. Chunk document (logic gốc)
-        split_docs = self.generator.chunk_docs(doc, chunk_size, question=question)
-        contexts = split_docs
-        print(f"✂️  Split into {len(split_docs)} chunks\n")
+        try:
+            # 1. Chunk document (logic gốc)
+            split_docs = self.generator.chunk_docs(doc, chunk_size, question=question)
+            contexts = split_docs
+            print(f"✂️  Split into {len(split_docs)} chunks\n")
 
-        # 2. Map stage (logic gốc)
-        map_result = self.generator.mr_map(split_docs, question)
-        map_result = self.remove_chunk(map_result, question=question, irrelevant_note=['[NO INFORMATION]'])
+            # 2. Map stage (logic gốc) - PARALLEL
+            map_result = await self.generator.mr_map(split_docs, question)
+            map_result = self.remove_chunk(map_result, question=question, irrelevant_note=['[NO INFORMATION]'])
 
-        # 3. Collapse stage (logic gốc)
-        collapse_result = self.generator.mr_collapse(map_result, question, token_max=chunk_size)
-        collapse_result = self.remove_chunk(collapse_result, question=question, irrelevant_note=['[NO INFORMATION]'])
+            # 3. Collapse stage (logic gốc) - PARALLEL per iteration
+            collapse_result = await self.generator.mr_collapse(map_result, question, token_max=chunk_size)
+            collapse_result = self.remove_chunk(collapse_result, question=question, irrelevant_note=['[NO INFORMATION]'])
 
-        # 4. Reduce stage (logic gốc)
-        reduce_result = self.generator.mr_reduce(collapse_result, question)
+            # 4. Reduce stage (logic gốc)
+            reduce_result = await self.generator.mr_reduce(collapse_result, question)
 
-        print(f"\n{'='*60}")
-        print("✅ Pipeline complete")
-        print(f"{'='*60}\n")
+            print(f"\n{'='*60}")
+            print("✅ Pipeline complete")
+            print(f"{'='*60}\n")
 
-        return reduce_result
+            return reduce_result
+        finally:
+            # Cleanup async client
+            await self.ollama_client.aclose()
+
+    def run(self, doc: str, question: str, chunk_size: int = 2048) -> str:
+        """
+        Synchronous wrapper cho run_async để tương thích với code cũ
+        """
+        return asyncio.run(self.run_async(doc, question, chunk_size))
 
 
 # ============= HELPER FUNCTIONS =============
@@ -419,19 +458,19 @@ def load_config(config_path: str) -> Dict:
 
 if __name__ == "__main__":
     # Load config từ file YAML
-    config = load_config("./config_ollama_mapreduce.yaml")
-    
+    config = load_config("config_ollama_mapreduce.yaml")
+
     # Khởi tạo pipeline
     pipeline = OllamaMapReducePipeline(config)
-    
+
     # Load document
     with open("/home/bojjoo/Code/EduAssist/test_data/hop_quochoi_lan10_khoaXV.txt") as f:
         document = f.read()
-    
+
     # Chạy pipeline
-    question = "Tóm tắt các ý chính của cuộc họp, trình bày rõ ràng thành từng mục nếu cần thiết, càng chi tiết càng tốt"
+    question = "Tóm tắt các ý chính của cuộc họp, trình bày rõ ràng thành từng mục"
     result = pipeline.run(document, question, chunk_size=4096)
-    
+
     print("\n" + "="*60)
     print("FINAL RESULT")
     print("="*60)
