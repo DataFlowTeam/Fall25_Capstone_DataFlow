@@ -150,11 +150,14 @@ def worker_loop(worker_id: int):
         try:
             normalize_prompt = llm.normalize_text(current_meeting_context, text)
             normalized = run_async(llm.async_generate(normalize_prompt), timeout=60.0)
+            print(f"[Worker-{worker_id}] Câu đã được chuẩn hóa và tối ưu:", text, "\n", normalized)
+            print("___________________________________________________________________________________________________________")
             
             if not normalized or normalized.strip().casefold() == "none":
                 continue
             
             if cache_faiss and cache_faiss.is_already_retrieved(normalized, similarity_threshold=0.7):
+                print(f"[Worker-{worker_id}] Skipped cached text: {normalized}")
                 continue
             
             related_docs = ""
@@ -190,6 +193,8 @@ def embedding_worker():
             if clean_text and transcript_faiss:
                 with faiss_lock:
                     transcript_faiss.add_transcript(clean_text, start_ms, end_ms)
+                print("[EmbeddingWorker] Added transcript chunk to FAISS:", clean_text[:80],
+                      f"start={start_ms}ms, end={end_ms}ms", "...")
         except Exception as e:
             print(f"[EmbeddingWorker] ERROR: {e}")
         finally:
@@ -282,10 +287,10 @@ def on_update(event: str, payload: dict):
 def asr_worker():
     try:
         chunkformer.chunkformer_asr_realtime_punc_norm(
-            mic_sr=16000, stream_chunk_sec=0.5, lookahead_sec=0.5,
-            left_context_size=128, right_context_size=32, max_overlap_match=32,
+            mic_sr=16000, stream_chunk_sec=0.5,
+            left_context_size=128, max_overlap_match=32,
             vad_threshold=0.01, vad_min_silence_blocks=2,
-            punc_model=punc_model, punc_window_words=100, punc_commit_margin_words=50,
+            punc_model=punc_model, punc_window_words=50, punc_commit_margin_words=25,
             itn_classifier=itn_classifier, itn_verbalizer=itn_verbalizer,
             on_update=on_update, stop_event=stop_event, return_final=False,
         )
