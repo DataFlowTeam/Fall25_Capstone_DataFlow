@@ -1,10 +1,10 @@
-# 🎓 EduAssist - Hệ thống Trợ lý Giáo dục AI
+# 🎓 ViMeeting - Hệ thống Trợ lý Giáo dục AI
 
 ![Python](https://img.shields.io/badge/python-3.12-blue.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.119.0-green.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-EduAssist là một hệ thống trợ lý giáo dục thông minh, sử dụng AI để hỗ trợ việc ghi âm, phiên âm, tóm tắt và trả lời câu hỏi từ nội dung cuộc họp/bài giảng. Hệ thống tích hợp công nghệ ASR (Automatic Speech Recognition), RAG (Retrieval-Augmented Generation), và LLM để cung cấp trải nghiệm học tập tương tác.
+ViMeeting là một hệ thống trợ lý giáo dục thông minh, sử dụng AI để hỗ trợ việc ghi âm, phiên âm, tóm tắt và trả lời câu hỏi từ nội dung cuộc họp/bài giảng. Hệ thống tích hợp công nghệ ASR (Automatic Speech Recognition), RAG (Retrieval-Augmented Generation), và LLM để cung cấp trải nghiệm học tập tương tác.
 
 ## ✨ Tính năng chính
 
